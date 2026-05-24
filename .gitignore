@@ -1,0 +1,4 @@
+.env-dev
+__pycache__/
+outputs/
+.spec-workflow/
