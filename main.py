@@ -1,18 +1,18 @@
 """2D游戏素材生成器 - FastAPI 后端。"""
 import base64
+import logging
+import uuid
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import dashscope
 
 from config import API_KEY, OUTPUT_DIR
 from prompts import build_t2i_prompt, build_style_change_prompt
 from api import generate_images, edit_single_image
-from image_utils import url_to_png, resize_image, save_as_format
+from image_utils import url_to_png, resize_image, save_as_format, remove_green_background
 
 # ============================================================
 # Pydantic Models
@@ -21,25 +21,23 @@ class GenerateRequest(BaseModel):
     content: str
     style: str
     size: str = "2048*2048"
-    transparent: bool = False
 
 class EditRequest(BaseModel):
     instruction: str
     image_url: str
     style: str
-    transparent: bool = False
+    keep_content: bool = False
 
 class StyleChangeRequest(BaseModel):
     new_style: str
     keep_content: bool = True
     image_url: str
     gen_prompt: str = ""
-    transparent: bool = False
 
 class PathPayload(BaseModel):
     path: str
-    width: Optional[int] = None
-    height: Optional[int] = None
+    width: int | None = None
+    height: int | None = None
     format: str = "PNG"
 
 # ============================================================
@@ -56,9 +54,9 @@ def _resolve_image(image_ref: str) -> str:
     if not p.exists():
         raise FileNotFoundError(f"图片文件不存在: {image_ref}")
     data = p.read_bytes()
-    ext = p.suffix.lower()
+    ext = p.suffix.lstrip(".").lower()
     mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
-            "webp": "image/webp"}.get(ext.lstrip("."), "image/png")
+            "webp": "image/webp"}.get(ext, "image/png")
     b64 = base64.b64encode(data).decode()
     return f"data:{mime};base64,{b64}"
 
@@ -77,11 +75,13 @@ async def api_generate(req: GenerateRequest):
     if not req.style.strip():
         return {"success": False, "error": "请输入风格描述"}
     try:
-        prompt = build_t2i_prompt(req.content.strip(), req.style.strip(), req.transparent)
+        prompt = build_t2i_prompt(req.content.strip(), req.style.strip())
         urls = generate_images(prompt, req.size)
-        paths = [url_to_png(u) for u in urls]
-        images = [{"path": p, "url": u, "display_url": _display_url(p)}
-                  for p, u in zip(paths, urls)]
+        paths = [remove_green_background(url_to_png(u)) for u in urls]
+        images = [
+            {"path": p, "url": u, "display_url": _display_url(p)}
+            for p, u in zip(paths, urls)
+        ]
         return {"success": True, "images": images, "prompt": prompt}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -93,9 +93,16 @@ async def api_edit(req: EditRequest):
     try:
         image_ref = _resolve_image(req.image_url)
         new_url, new_path = edit_single_image(
-            req.instruction.strip(), image_ref, req.style, req.transparent)
-        return {"success": True, "image": {
-            "path": new_path, "url": new_url, "display_url": _display_url(new_path)}}
+            req.instruction.strip(), image_ref, req.style, req.keep_content)
+        final_path = remove_green_background(new_path)
+        return {
+            "success": True,
+            "image": {
+                "path": final_path,
+                "url": new_url,
+                "display_url": _display_url(final_path),
+            },
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -108,10 +115,17 @@ async def api_style_change(req: StyleChangeRequest):
             req.new_style.strip(), req.keep_content, req.gen_prompt)
         image_ref = _resolve_image(req.image_url)
         new_url, new_path = edit_single_image(
-            prompt, image_ref, req.new_style.strip(), req.transparent)
-        return {"success": True, "image": {
-            "path": new_path, "url": new_url, "display_url": _display_url(new_path)},
-            "prompt": prompt}
+            prompt, image_ref, req.new_style.strip())
+        final_path = remove_green_background(new_path)
+        return {
+            "success": True,
+            "image": {
+                "path": final_path,
+                "url": new_url,
+                "display_url": _display_url(final_path),
+            },
+            "prompt": prompt,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -133,23 +147,29 @@ async def api_save(req: PathPayload):
         return {"success": False, "error": "没有可保存的图片"}
     try:
         new_path = save_as_format(req.path, req.format)
-        return {"success": True, "path": new_path,
-                "display_url": _display_url(new_path),
-                "filename": Path(new_path).name}
+        return {
+            "success": True,
+            "path": new_path,
+            "display_url": _display_url(new_path),
+            "filename": Path(new_path).name,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
 @app.post("/api/upload")
 async def api_upload(file: UploadFile = File(...)):
-    import uuid
     try:
         content = await file.read()
         filename = f"upload_{uuid.uuid4().hex[:8]}.png"
         filepath = OUTPUT_DIR / filename
         filepath.write_bytes(content)
         path_str = str(filepath)
-        return {"success": True, "path": path_str,
-                "display_url": _display_url(path_str), "filename": filename}
+        return {
+            "success": True,
+            "path": path_str,
+            "display_url": _display_url(path_str),
+            "filename": filename,
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -169,10 +189,12 @@ app.mount("/", StaticFiles(directory="static", html=True), name="static")
 # Entry Point
 # ============================================================
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     if not API_KEY:
         print("错误: 未设置 DASHSCOPE_API_KEY")
         print("请在 .env-dev 文件中填入你的 Key，格式: DASHSCOPE_API_KEY=sk-xxx")
         exit(1)
-    dashscope.api_key = API_KEY
+    import dashscope
     import uvicorn
+    dashscope.api_key = API_KEY
     uvicorn.run(app, host="0.0.0.0", port=7860)

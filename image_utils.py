@@ -1,23 +1,36 @@
 """图片下载、缩放、格式转换。"""
+import time
 import uuid
 from io import BytesIO
 from pathlib import Path
 
+import numpy as np
 import requests
 from PIL import Image
 
 from config import OUTPUT_DIR
 
+_CHROMA_TOLERANCE = 40
 
-def url_to_png(url: str) -> str:
-    """下载图片并保存为PNG，返回本地路径。"""
-    resp = requests.get(url, timeout=60)
-    resp.raise_for_status()
-    img = Image.open(BytesIO(resp.content))
-    filename = f"{uuid.uuid4().hex[:8]}.png"
-    path = OUTPUT_DIR / filename
-    img.save(str(path), "PNG")
-    return str(path)
+
+def url_to_png(url: str, max_retries: int = 3) -> str:
+    """下载图片并保存为PNG，返回本地路径。超时自动重试。"""
+    last_err = None
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, timeout=120)
+            resp.raise_for_status()
+            img = Image.open(BytesIO(resp.content))
+            filename = f"{uuid.uuid4().hex[:8]}.png"
+            path = OUTPUT_DIR / filename
+            img.save(str(path), "PNG")
+            return str(path)
+        except (requests.Timeout, requests.ConnectionError,
+                requests.HTTPError, requests.RequestException) as e:
+            last_err = e
+            if attempt < max_retries - 1:
+                time.sleep(2)
+    raise RuntimeError(f"图片下载失败（已重试{max_retries}次）: {last_err}")
 
 
 def resize_image(path: str, w: int, h: int) -> str:
@@ -40,10 +53,28 @@ def resize_image(path: str, w: int, h: int) -> str:
     return new_path
 
 
+def remove_green_background(path: str) -> str:
+    """去除绿幕背景，将绿色像素变为透明（numpy矢量化）。"""
+    img = Image.open(path).convert("RGBA")
+    arr = np.array(img)
+    r, g, b, a = arr[:, :, 0], arr[:, :, 1], arr[:, :, 2], arr[:, :, 3]
+    mask = (g > r + _CHROMA_TOLERANCE) & (g > b + _CHROMA_TOLERANCE)
+    arr[mask, 3] = 0
+    result = Image.fromarray(arr, "RGBA")
+    new_path = str(OUTPUT_DIR / f"nobg_{uuid.uuid4().hex[:8]}.png")
+    result.save(new_path, "PNG")
+    return new_path
+
+
+_FORMAT_MAP = {"PNG": ".png", "JPEG": ".jpg", "WebP": ".webp"}
+
+
 def save_as_format(path: str, fmt: str) -> str:
     """按指定格式保存图片，返回新路径。"""
+    if fmt not in _FORMAT_MAP:
+        raise ValueError(f"不支持的格式: {fmt}")
     img = Image.open(path)
-    ext = {"PNG": ".png", "JPEG": ".jpg", "WebP": ".webp"}[fmt]
+    ext = _FORMAT_MAP[fmt]
     new_path = str(OUTPUT_DIR / f"saved_{uuid.uuid4().hex[:8]}{ext}")
     save_fmt = "JPEG" if fmt == "JPEG" else fmt
     if fmt in ("JPEG", "WebP") and img.mode == "RGBA":

@@ -22,7 +22,3 @@ BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
 
 OUTPUT_DIR = Path(__file__).parent / "outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
-
-SIZE_OPTIONS = [
-    "2048*2048", "2688*1536", "1536*2688", "2368*1728", "1728*2368",
-]

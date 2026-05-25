@@ -136,7 +136,6 @@ select { cursor: pointer; }
                         <div class="form-group"><label>内容描述</label><textarea id="genContent" placeholder="描述你想要生成的图片内容..." rows="3"></textarea></div>
                         <div class="form-group"><label>风格描述</label><input id="genStyle" placeholder="例如：像素风格、水墨风格、水彩风格"></div>
                         <div class="form-group"><label>图片尺寸</label><select id="genSize"><option>2048*2048</option><option>2688*1536</option><option>1536*2688</option><option>2368*1728</option><option>1728*2368</option></select></div>
-                        <div class="form-group"><div class="checkbox-row"><input type="checkbox" id="genTransparent"><label style="margin:0">透明背景</label></div></div>
                         <div class="row">
                             <button class="btn btn-primary" id="genBtn" onclick="handleGenerate()">生成图像</button>
                             <button class="btn" id="regenBtn" onclick="handleRegenerate()">重新生成</button>
@@ -170,12 +169,17 @@ select { cursor: pointer; }
                 <div class="row" style="align-items:flex-start">
                     <div class="col">
                         <div class="form-group"><label>上传新图片（或从生成页进入已加载）</label><input type="file" id="editUpload" accept="image/*" onchange="handleUpload(this)"></div>
-                        <img id="editImage" class="image-preview" src="" alt="当前图片" style="display:none">
+                        <div id="resizePreviewContainer" style="position:relative; display:inline-block; line-height:0;">
+                            <img id="editImage" class="image-preview" src="" alt="当前图片" style="display:none" onload="syncResizeDims(this)">
+                            <div id="resizeOverlay" style="position:absolute; border:2px dashed #4caf50; pointer-events:none; display:none; z-index:10; box-sizing:border-box;"></div>
+                        </div>
                         <div id="editStatus" class="status"></div>
+                        <button class="btn btn-danger btn-sm" onclick="handleClearImage()" style="margin-top:8px">清空图片</button>
                     </div>
                     <div class="col">
                         <h3>编辑操作</h3>
                         <div class="form-group"><label>编辑指令</label><textarea id="editInstruction" placeholder="描述你要修改的内容..." rows="2"></textarea></div>
+                        <div class="form-group"><div class="checkbox-row"><input type="checkbox" id="keepContentEdit"><label style="margin:0">保持内容不变</label></div></div>
                         <div class="row">
                             <button class="btn btn-primary" id="editSubmitBtn" onclick="handleEditSubmit()">提交编辑</button>
                             <button class="btn btn-danger" id="undoBtn" style="display:none" onclick="handleUndo()">撤销编辑</button>
@@ -184,8 +188,8 @@ select { cursor: pointer; }
                         <hr class="divider">
                         <h3>改尺寸</h3>
                         <div class="row">
-                            <div class="form-group" style="flex:1"><label>宽(px)</label><input type="number" id="resizeW" value="512" min="1"></div>
-                            <div class="form-group" style="flex:1"><label>高(px)</label><input type="number" id="resizeH" value="512" min="1"></div>
+                            <div class="form-group" style="flex:1"><label>宽(px)</label><input type="number" id="resizeW" value="512" min="1" oninput="updateResizePreview()"></div>
+                            <div class="form-group" style="flex:1"><label>高(px)</label><input type="number" id="resizeH" value="512" min="1" oninput="updateResizePreview()"></div>
                             <button class="btn" id="resizeBtn" onclick="handleResize()" style="align-self:flex-end">应用尺寸</button>
                         </div>
 
@@ -207,7 +211,10 @@ select { cursor: pointer; }
             <div class="card">
                 <div class="row" style="justify-content:space-between">
                     <h2>图片保存</h2>
-                    <button class="btn btn-sm" onclick="showPage('edit')">← 返回编辑</button>
+                    <div>
+                        <button class="btn btn-sm" onclick="showPage('edit')">← 返回编辑</button>
+                        <button class="btn btn-sm" onclick="showPage('home')" style="margin-left:8px">重新生成</button>
+                    </div>
                 </div>
                 <div class="row" style="align-items:flex-start">
                     <div class="col">
@@ -243,7 +250,7 @@ const STEPS = [
 ];
 
 const state = {
-    gen: { paths: [], urls: [], prompt: '', content: '', style: '', transparent: false },
+    gen: { paths: [], urls: [], prompt: '', content: '', style: '' },
     edit: { path: '', url: '', prevPath: '', prevUrl: '', style: '', prompt: '' },
     selectedGenIdx: 0,
 };
@@ -305,16 +312,23 @@ function showStatus(id, msg, isError) {
     el.className = 'status ' + (isError ? 'status-error' : 'status-success');
 }
 
+function filenameFromPath(p) {
+    return p.split('/').pop().split('\\').pop();
+}
+
 // ============================================================
 // Generate Page
 // ============================================================
 function navToGenerate() {
-    state.gen = { paths: [], urls: [], prompt: '', content: '', style: '', transparent: false };
+    state.gen = { paths: [], urls: [], prompt: '', content: '', style: '' };
     document.getElementById('genContent').value = '';
     document.getElementById('genStyle').value = '';
     document.getElementById('genSize').value = '2048*2048';
-    document.getElementById('genTransparent').checked = false;
-    document.querySelectorAll('.image-gallery img').forEach(img => { img.src = ''; img.style.display = 'none'; img.classList.remove('selected'); });
+    document.querySelectorAll('.image-gallery img').forEach(img => {
+        img.src = '';
+        img.style.display = 'none';
+        img.classList.remove('selected');
+    });
     document.getElementById('genSelect').innerHTML = '<option>图1</option>';
     document.getElementById('genStatus').textContent = '';
     document.getElementById('genStatus').className = 'status';
@@ -334,8 +348,7 @@ async function handleGenerate() {
 
     try {
         const size = document.getElementById('genSize').value;
-        const transparent = document.getElementById('genTransparent').checked;
-        const resp = await apiCall('/generate', { content, style, size, transparent });
+        const resp = await apiCall('/generate', { content, style, size });
         if (!resp.success) { showStatus('genStatus', resp.error, true); return; }
 
         state.gen.paths = resp.images.map(i => i.path);
@@ -343,7 +356,6 @@ async function handleGenerate() {
         state.gen.prompt = resp.prompt;
         state.gen.content = content.trim();
         state.gen.style = style.trim();
-        state.gen.transparent = transparent;
 
         ['genImg1', 'genImg2', 'genImg3'].forEach((id, i) => {
             const img = document.getElementById(id);
@@ -379,18 +391,23 @@ function handleResetGen() {
     document.getElementById('genContent').value = '';
     document.getElementById('genStyle').value = '';
     document.getElementById('genSize').value = '2048*2048';
-    document.getElementById('genTransparent').checked = false;
-    document.querySelectorAll('.image-gallery img').forEach(img => { img.src = ''; img.style.display = 'none'; img.classList.remove('selected'); });
+    document.querySelectorAll('.image-gallery img').forEach(img => {
+        img.src = '';
+        img.style.display = 'none';
+        img.classList.remove('selected');
+    });
     document.getElementById('genSelect').innerHTML = '<option>图1</option>';
     document.getElementById('genStatus').textContent = '';
     document.getElementById('genStatus').className = 'status';
-    state.gen = { paths: [], urls: [], prompt: '', content: '', style: '', transparent: false };
+    state.gen = { paths: [], urls: [], prompt: '', content: '', style: '' };
     state.selectedGenIdx = 0;
 }
 
 function selectGenImage(idx) {
     state.selectedGenIdx = idx;
-    document.querySelectorAll('.image-gallery img').forEach((img, i) => img.classList.toggle('selected', i === idx));
+    document.querySelectorAll('.image-gallery img').forEach((img, i) => {
+        img.classList.toggle('selected', i === idx);
+    });
     const select = document.getElementById('genSelect');
     const opt = select.querySelectorAll('option')[idx];
     if (opt) select.value = opt.value;
@@ -423,7 +440,7 @@ function handleEnterEdit() {
 
     // Update UI
     const img = document.getElementById('editImage');
-    img.src = '/api/outputs/' + state.gen.paths[idx].split('/').pop().split('\\').pop();
+    img.src = '/api/outputs/' + filenameFromPath(state.gen.paths[idx]);
     img.style.display = '';
     document.getElementById('editStatus').textContent = '';
     document.getElementById('editStatus').className = 'status';
@@ -431,6 +448,7 @@ function handleEnterEdit() {
     document.getElementById('undoBtn').style.display = 'none';
     document.getElementById('saveDownload').classList.remove('show');
     document.getElementById('editUpload').value = '';
+    document.getElementById('keepContentEdit').checked = false;
 
     showPage('edit');
 }
@@ -447,7 +465,22 @@ function navToEditUpload() {
     document.getElementById('editInstruction').value = '';
     document.getElementById('undoBtn').style.display = 'none';
     document.getElementById('editUpload').value = '';
+    document.getElementById('keepContentEdit').checked = false;
     showPage('edit');
+}
+
+function handleClearImage() {
+    state.edit = { path: '', url: '', prevPath: '', prevUrl: '', style: '', prompt: '' };
+    const img = document.getElementById('editImage');
+    img.src = '';
+    img.style.display = 'none';
+    document.getElementById('editUpload').value = '';
+    document.getElementById('undoBtn').style.display = 'none';
+    document.getElementById('saveDownload').classList.remove('show');
+    document.getElementById('editStatus').textContent = '';
+    document.getElementById('editStatus').className = 'status';
+    document.getElementById('keepContentEdit').checked = false;
+    updateResizePreview();
 }
 
 async function handleUpload(input) {
@@ -483,11 +516,12 @@ async function handleEditSubmit() {
     setLoading(btn, true);
     try {
         const imageRef = state.edit.url || state.edit.path;
+        const keepContent = document.getElementById('keepContentEdit').checked;
         const resp = await apiCall('/edit', {
             instruction: instruction.trim(),
             image_url: imageRef,
             style: state.edit.style,
-            transparent: state.gen.transparent,
+            keep_content: keepContent,
         });
         if (!resp.success) { showStatus('editStatus', resp.error, true); return; }
 
@@ -515,7 +549,7 @@ async function handleUndo() {
     state.edit.prevPath = '';
     state.edit.prevUrl = '';
     const img = document.getElementById('editImage');
-    img.src = '/api/outputs/' + state.edit.path.split('/').pop().split('\\').pop();
+    img.src = '/api/outputs/' + filenameFromPath(state.edit.path);
     document.getElementById('undoBtn').style.display = 'none';
     document.getElementById('saveDownload').classList.remove('show');
     showStatus('editStatus', '已撤销', false);
@@ -524,7 +558,7 @@ async function handleUndo() {
 function navToSave() {
     if (!state.edit.path) { showStatus('editStatus', '没有可保存的图片', true); return; }
     const img = document.getElementById('saveImage');
-    img.src = '/api/outputs/' + state.edit.path.split('/').pop().split('\\').pop();
+    img.src = '/api/outputs/' + filenameFromPath(state.edit.path);
     img.style.display = '';
     document.getElementById('saveStatus').textContent = '';
     document.getElementById('saveStatus').className = 'status';
@@ -554,6 +588,78 @@ async function handleSaveExecute() {
     } finally {
         setLoading(btn, false);
     }
+}
+
+function syncResizeDims(img) {
+    if (!img.naturalWidth || !img.naturalHeight) return;
+    document.getElementById('resizeW').value = img.naturalWidth;
+    document.getElementById('resizeH').value = img.naturalHeight;
+    updateResizePreview();
+}
+
+function _resetPreviewStyle(img, overlay, container) {
+    overlay.style.display = 'none';
+    img.style.position = '';
+    img.style.left = '';
+    img.style.top = '';
+    img.style.width = '';
+    img.style.height = '';
+    img.style.maxWidth = '';
+    img.style.maxHeight = '';
+    container.style.width = '';
+    container.style.height = '';
+}
+
+function updateResizePreview() {
+    const img = document.getElementById('editImage');
+    const overlay = document.getElementById('resizeOverlay');
+    const container = document.getElementById('resizePreviewContainer');
+
+    if (!img.naturalWidth || !img.naturalHeight || img.style.display === 'none') {
+        overlay.style.display = 'none';
+        return;
+    }
+
+    const naturalW = img.naturalWidth;
+    const naturalH = img.naturalHeight;
+    const targetW = parseInt(document.getElementById('resizeW').value);
+    const targetH = parseInt(document.getElementById('resizeH').value);
+
+    if (!targetW || !targetH || targetW < 1 || targetH < 1
+        || (targetW === naturalW && targetH === naturalH)) {
+        _resetPreviewStyle(img, overlay, container);
+        return;
+    }
+
+    const maxW = 600;
+    const maxH = 400;
+    const boundW = Math.max(naturalW, targetW);
+    const boundH = Math.max(naturalH, targetH);
+    const scale = Math.min(maxW / boundW, maxH / boundH);
+
+    const imgW = Math.round(naturalW * scale);
+    const imgH = Math.round(naturalH * scale);
+    const frameW = Math.round(targetW * scale);
+    const frameH = Math.round(targetH * scale);
+    const cw = Math.max(imgW, frameW);
+    const ch = Math.max(imgH, frameH);
+
+    container.style.width = cw + 'px';
+    container.style.height = ch + 'px';
+
+    img.style.position = 'absolute';
+    img.style.left = Math.round((cw - imgW) / 2) + 'px';
+    img.style.top = Math.round((ch - imgH) / 2) + 'px';
+    img.style.width = imgW + 'px';
+    img.style.height = imgH + 'px';
+    img.style.maxWidth = 'none';
+    img.style.maxHeight = 'none';
+
+    overlay.style.display = '';
+    overlay.style.left = Math.round((cw - frameW) / 2) + 'px';
+    overlay.style.top = Math.round((ch - frameH) / 2) + 'px';
+    overlay.style.width = frameW + 'px';
+    overlay.style.height = frameH + 'px';
 }
 
 async function handleResize() {
@@ -597,7 +703,6 @@ async function handleStyleChange() {
             keep_content: keepContent,
             image_url: imageRef,
             gen_prompt: state.edit.prompt,
-            transparent: state.gen.transparent,
         });
         if (!resp.success) { showStatus('editStatus', resp.error, true); return; }
 
