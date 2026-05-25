@@ -6,7 +6,11 @@ def build_t2i_prompt(content: str, style: str, transparent: bool) -> str:
     content = content.strip()
     if content and content[-1] not in "。！？.!?":
         content += "。"
-    parts = [content, f"采用{style}风格。"]
+    parts = [
+        f"严格遵循{style}风格。",
+        f"画面必须完全符合{style}的视觉特征，包括构图、色彩、笔触、光影等所有方面。",
+        content,
+    ]
     if transparent:
         parts.append("透明背景，无底色，PNG格式，Alpha通道。")
     return "".join(parts)
@@ -17,7 +21,10 @@ def build_edit_prompt(instruction: str, style: str, transparent: bool) -> str:
     instruction = instruction.strip()
     if instruction and instruction[-1] not in "。！？.!?":
         instruction += "。"
-    parts = [instruction, f"保持{style}风格。"]
+    parts = [
+        f"严格保持{style}风格，画面必须完全符合{style}的视觉特征。",
+        instruction,
+    ]
     if transparent:
         parts.append("透明背景，无底色，PNG格式，Alpha通道。")
     return "".join(parts)
@@ -30,11 +37,19 @@ def build_style_change_prompt(new_style: str, keep_content: bool,
         content_part = (
             gen_prompt.split("。")[0] if "。" in gen_prompt else gen_prompt
         )
-        return f"{content_part}。采用{new_style}风格。"
+        return (
+            f"严格遵循{new_style}风格。"
+            f"画面必须完全符合{new_style}的视觉特征。"
+            f"{content_part}。"
+        )
 
     if keep_content:
         return (
             f"将这张图片的风格改为{new_style}。"
+            f"严格遵循{new_style}风格，画面必须完全符合{new_style}的视觉特征。"
             f"保持画面内容、物体位置、形态完全不变。"
         )
-    return f"将这张图片的风格改为{new_style}。"
+    return (
+        f"将这张图片的风格改为{new_style}。"
+        f"严格遵循{new_style}风格，画面必须完全符合{new_style}的视觉特征。"
+    )

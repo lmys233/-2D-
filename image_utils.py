@@ -21,11 +21,22 @@ def url_to_png(url: str) -> str:
 
 
 def resize_image(path: str, w: int, h: int) -> str:
-    """缩放图片，最近邻插值（适合像素风），返回新路径。"""
+    """扩展画布到目标尺寸，图片等比缩放居中放置，空余区域透明。"""
     img = Image.open(path)
-    img = img.resize((w, h), Image.NEAREST)
+    orig_w, orig_h = img.size
+    scale = min(w / orig_w, h / orig_h)
+    new_w = round(orig_w * scale)
+    new_h = round(orig_h * scale)
+    resized = img.resize((new_w, new_h), Image.NEAREST)
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    offset_x = (w - new_w) // 2
+    offset_y = (h - new_h) // 2
+    if resized.mode == "RGBA":
+        canvas.paste(resized, (offset_x, offset_y), resized)
+    else:
+        canvas.paste(resized, (offset_x, offset_y))
     new_path = str(OUTPUT_DIR / f"resized_{uuid.uuid4().hex[:8]}.png")
-    img.save(new_path, "PNG")
+    canvas.save(new_path, "PNG")
     return new_path
 
 
